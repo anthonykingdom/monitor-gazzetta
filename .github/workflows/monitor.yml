@@ -2,8 +2,8 @@ name: Monitor Gazzetta
 
 "on":
   schedule:
-    - cron: "30 9 * * 1,3,5"
-    - cron: "30 15 * * 1,3,5"
+    - cron: "30 9 * * 1-5"
+    - cron: "30 15 * * 1-5"
   workflow_dispatch:
 
 jobs:
