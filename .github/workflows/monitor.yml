@@ -1,9 +1,8 @@
-name: Monitor Gazzetta
+name: Monitor Gazzetta v2
 
-"on":
+on:
   schedule:
-    - cron: "30 9 * * 1-5"
-    - cron: "30 15 * * 1-5"
+    - cron: "*/5 * * * *"   # ogni 5 minuti (TEST)
   workflow_dispatch:
 
 jobs:
@@ -13,6 +12,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Debug trigger
+        run: |
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Time (UTC): $(date)"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -26,4 +30,4 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python main.py
+        run: python -u main.py
