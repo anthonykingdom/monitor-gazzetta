@@ -13,8 +13,8 @@ CHAT_ID = os.environ["CHAT_ID"]
 BASE_URL = "https://www.gazzettaufficiale.it"
 LAST_30_DAYS_URL = f"{BASE_URL}/30giorni/serie_generale"
 
-DAYS_BACK = 7
-MAX_ISSUES = 7
+DAYS_BACK = 20
+MAX_ISSUES = 20
 MAX_ACTS_PER_ISSUE = None
 MAX_RESULTS_IN_MESSAGE = 200
 
@@ -23,7 +23,6 @@ TELEGRAM_MAX_TEXT_LENGTH = 3900
 SECTION_1_KEYWORDS = [
     "fondazioni lirico-sinfoniche",
     "fondazione lirico",
-    "lirico-sinfoniche",
     "teatro alla scala",
 ]
 
@@ -405,7 +404,10 @@ def build_message(results):
 
     if len(message) > TELEGRAM_MAX_TEXT_LENGTH:
         log("Messaggio troppo lungo dopo build_message, applico fallback.")
-        message = "\n".join(build_header(len(results)) + ["<i>Risultati trovati ma non visualizzabili interamente.</i>"])
+        message = "\n".join(
+            build_header(len(results))
+            + ["<i>Risultati trovati ma non visualizzabili interamente.</i>"]
+        )
 
     return message
 
