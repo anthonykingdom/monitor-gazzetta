@@ -39,6 +39,21 @@ SECTION_3_KEYWORDS = [
 
 KEYWORDS = SECTION_1_KEYWORDS + SECTION_2_KEYWORDS + SECTION_3_KEYWORDS
 
+MONTHS_IT = {
+    "01": "gen",
+    "02": "feb",
+    "03": "mar",
+    "04": "apr",
+    "05": "mag",
+    "06": "giu",
+    "07": "lug",
+    "08": "ago",
+    "09": "set",
+    "10": "ott",
+    "11": "nov",
+    "12": "dic",
+}
+
 
 def log(message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -76,10 +91,25 @@ def parse_issue_date(text: str):
     return datetime.strptime(match.group(1), "%d-%m-%Y").date()
 
 
+def compact_date_italian(date_str: str) -> str:
+    match = re.match(r"(\d{2})-(\d{2})-(\d{4})$", date_str)
+    if not match:
+        return date_str
+    day, month, year = match.groups()
+    month_it = MONTHS_IT.get(month, month)
+    return f"{day}{month_it}{year}"
+
+
 def format_issue_label(issue_label: str) -> str:
-    match = re.search(r"n°\s*(\d+)\s+del\s+(\d{2}-\d{2}-\d{4})", issue_label, re.IGNORECASE)
+    match = re.search(
+        r"n°\s*(\d+)\s+del\s+(\d{2}-\d{2}-\d{4})",
+        issue_label,
+        re.IGNORECASE,
+    )
     if match:
-        return f"GU {match.group(1)} {match.group(2)}"
+        issue_number = match.group(1)
+        compact_date = compact_date_italian(match.group(2))
+        return f"GU {issue_number} {compact_date}"
     return issue_label
 
 
@@ -152,7 +182,9 @@ def extract_acts_from_issue(issue):
             }
         )
 
-    return acts
+    if MAX_ACTS_PER_ISSUE is None:
+        return acts
+    return acts[:MAX_ACTS_PER_ISSUE]
 
 
 def get_menu_url_from_detail(detail_url: str):
@@ -173,19 +205,28 @@ def extract_article_urls(menu_url: str):
     seen = set()
 
     for a in soup.find_all("a", href=True):
-        full_url = urljoin(BASE_URL, a["href"])
+        href = a["href"]
+        text = a.get_text(" ", strip=True)
+
+        if not href or not text:
+            continue
+
+        full_url = urljoin(BASE_URL, href)
+
         if "caricaArticolo" not in full_url:
             continue
+
         if full_url in seen:
             continue
         seen.add(full_url)
 
         urls.append(
             {
-                "article_label": normalize_spaces(a.get_text(" ", strip=True)),
+                "article_label": normalize_spaces(text),
                 "url": full_url,
             }
         )
+
     return urls
 
 
@@ -201,12 +242,13 @@ def find_keywords_in_text(text: str):
 
 
 def classify_section(found_keywords):
-    f = {k.lower() for k in found_keywords}
-    if any(k.lower() in f for k in SECTION_2_KEYWORDS):
+    found_lower = {k.lower() for k in found_keywords}
+
+    if any(k.lower() in found_lower for k in SECTION_2_KEYWORDS):
         return 2
-    if any(k.lower() in f for k in SECTION_1_KEYWORDS):
+    if any(k.lower() in found_lower for k in SECTION_1_KEYWORDS):
         return 1
-    if any(k.lower() in f for k in SECTION_3_KEYWORDS):
+    if any(k.lower() in found_lower for k in SECTION_3_KEYWORDS):
         return 3
     return None
 
@@ -247,7 +289,8 @@ def analyze():
                         )
                         break
 
-            except Exception:
+            except Exception as e:
+                log(f"Errore su {act['detail_url']}: {e}")
                 continue
 
     return results
@@ -255,31 +298,56 @@ def analyze():
 
 def deduplicate(results):
     seen = set()
-    out = []
-    for r in results:
-        key = (r["title"], r["article_label"], r["url"])
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
-    return out
+    output = []
+
+    for item in results:
+        key = (item["title"], item["article_label"], item["url"])
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(item)
+
+    return output
 
 
-def build_header(n):
+def build_header(results_count: int):
     ts = datetime.now().strftime("%d-%m %H:%M")
-    if n == 0:
-        return [f"<b>📭 Nessun risultato</b>", f"<i>{ts}</i>", ""]
-    return [f"<b>🚨 {n} risultati</b>", f"<i>{ts}</i>", ""]
 
+    if results_count == 0:
+        return [
+            "<b>📭 Nessun risultato</b>",
+            f"<i>{escape(ts)}</i>",
+            "",
+        ]
 
-def build_section_title(s):
-    return {1: "🎭 FLS", 2: "🎟️ FNSV", 3: "🏛️ MIC"}[s]
-
-
-def build_result_block(i, item):
     return [
-        f"{i}. <a href=\"{escape(item['url'])}\">{escape(item['title'])}</a>",
-        f"   {escape(format_issue_label(item['issue_label']))} | Art:{escape(clean_label(item['article_label']))} | K:{escape(','.join(item['keywords']))}",
+        f"<b>🚨 {results_count} risultati</b>",
+        f"<i>{escape(ts)}</i>",
+        "",
     ]
+
+
+def build_section_title(section_number: int) -> str:
+    return {
+        1: "🎭 FLS",
+        2: "🎟️ FNSV",
+        3: "🏛️ MIC",
+    }[section_number]
+
+
+def build_result_block(index: int, item: dict):
+    title_line = f'{index}. <a href="{escape(item["url"])}">{escape(item["title"])}</a>'
+
+    issue_info = escape(format_issue_label(item["issue_label"]))
+    article_info = escape(clean_label(item["article_label"]))
+
+    if item["section"] == 3:
+        detail_line = f"   {issue_info} | Art:{article_info}"
+    else:
+        keywords_info = escape(",".join(item["keywords"]))
+        detail_line = f"   {issue_info} | Art:{article_info} | K:{keywords_info}"
+
+    return [title_line, detail_line]
 
 
 def build_message(results):
@@ -295,37 +363,64 @@ def build_message(results):
     }
 
     parts = build_header(len(results))
-    count = 0
-    idx = 1
+    included_count = 0
+    progressive_index = 1
+    max_results = min(len(results), MAX_RESULTS_IN_MESSAGE)
 
-    for s in [1, 2, 3]:
-        if not sections[s]:
+    for section_number in [1, 2, 3]:
+        section_items = sections[section_number]
+        if not section_items:
             continue
 
-        header = [f"<b>{build_section_title(s)}</b>"]
-        if len("\n".join(parts + header)) > TELEGRAM_MAX_TEXT_LENGTH:
+        section_header = [f"<b>{escape(build_section_title(section_number))}</b>"]
+
+        candidate = "\n".join(parts + section_header)
+        if len(candidate) > TELEGRAM_MAX_TEXT_LENGTH:
             break
 
-        parts += header
+        parts.extend(section_header)
 
-        for item in sections[s]:
-            block = build_result_block(idx, item)
+        for item in section_items:
+            if included_count >= max_results:
+                break
+
+            block = build_result_block(progressive_index, item)
             candidate = "\n".join(parts + block)
 
             if len(candidate) > TELEGRAM_MAX_TEXT_LENGTH:
                 break
 
-            parts += block
-            count += 1
-            idx += 1
+            parts.extend(block)
+            included_count += 1
+            progressive_index += 1
 
-    return "\n".join(parts)
+        if included_count >= max_results:
+            break
+
+    if included_count < max_results:
+        omitted = max_results - included_count
+        parts.append(f"<i>... altri {omitted} risultati non mostrati.</i>")
+
+    message = "\n".join(parts)
+
+    if len(message) > TELEGRAM_MAX_TEXT_LENGTH:
+        log("Messaggio troppo lungo dopo build_message, applico fallback.")
+        message = "\n".join(build_header(len(results)) + ["<i>Risultati trovati ma non visualizzabili interamente.</i>"])
+
+    return message
 
 
 def main():
-    results = deduplicate(analyze())
-    msg = build_message(results)
-    send_telegram_message_html(msg)
+    try:
+        log("=== Avvio script Monitor Gazzetta ===")
+        results = analyze()
+        results = deduplicate(results)
+        message = build_message(results)
+        send_telegram_message_html(message)
+        log("✅ Controllo completato con successo.")
+    except Exception as e:
+        log(f"❌ Errore fatale: {e}")
+        raise
 
 
 if __name__ == "__main__":
