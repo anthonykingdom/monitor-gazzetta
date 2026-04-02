@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from html import escape
 from urllib.parse import urljoin
 
@@ -15,12 +15,10 @@ LAST_30_DAYS_URL = f"{BASE_URL}/30giorni/serie_generale"
 
 DAYS_BACK = 20
 MAX_ISSUES = 20
-MAX_ACTS_PER_ISSUE = 200
-MAX_RESULTS_IN_MESSAGE = 50
+MAX_ACTS_PER_ISSUE = None
+MAX_RESULTS_IN_MESSAGE = 200
 
-# Telegram accetta circa 4096 caratteri; teniamo un margine.
 TELEGRAM_MAX_TEXT_LENGTH = 3900
-MAX_NOTE_LENGTH = 220
 
 KEYWORDS = [
     "fondazioni lirico-sinfoniche",
@@ -158,8 +156,15 @@ def extract_acts_from_issue(issue):
             }
         )
 
-    selected = acts[:MAX_ACTS_PER_ISSUE]
-    log(f"Atti estratti da {issue['issue_label']}: {len(selected)}")
+    if MAX_ACTS_PER_ISSUE is None:
+        selected = acts
+    else:
+        selected = acts[:MAX_ACTS_PER_ISSUE]
+
+    log(
+        f"{issue['issue_label']}: atti totali trovati = {len(acts)}, "
+        f"atti analizzati = {len(selected)}"
+    )
     return selected
 
 
@@ -227,39 +232,6 @@ def clean_label(text: str) -> str:
     return text.strip(" -–—:;")
 
 
-def shorten_text(text: str, max_len: int) -> str:
-    text = normalize_spaces(text)
-    if len(text) <= max_len:
-        return text
-
-    shortened = text[:max_len].rsplit(" ", 1)[0].strip()
-    if not shortened:
-        shortened = text[:max_len].strip()
-    return shortened + "…"
-
-
-def extract_note_from_text(text: str) -> str:
-    sentences = re.split(r"[.;:\n]", text)
-
-    for s in sentences:
-        s = normalize_spaces(s)
-
-        if not s:
-            continue
-        if len(s) < 20:
-            continue
-        if s.lower().startswith("il presente"):
-            continue
-        if s.lower().startswith("vista"):
-            continue
-        if s.lower().startswith("considerato"):
-            continue
-
-        return shorten_text(s, MAX_NOTE_LENGTH)
-
-    return shorten_text(text, MAX_NOTE_LENGTH)
-
-
 def analyze():
     log("Avvio analisi...")
     results = []
@@ -270,9 +242,9 @@ def analyze():
     for issue in issues:
         acts = extract_acts_from_issue(issue)
 
-        for act in acts:
+        for act_index, act in enumerate(acts, start=1):
             try:
-                log(f"Analizzo atto: {act['title']}")
+                log(f"Analizzo atto {act_index}: {act['title']}")
                 menu_url = get_menu_url_from_detail(act["detail_url"])
                 if not menu_url:
                     log("Menu 'atto completo' non trovato.")
@@ -283,8 +255,6 @@ def analyze():
                     found = find_keywords_in_text(text)
 
                     if found:
-                        note = extract_note_from_text(text)
-
                         results.append(
                             {
                                 "issue_date": act["issue_date"],
@@ -293,12 +263,11 @@ def analyze():
                                 "article_label": article["article_label"],
                                 "url": article["url"],
                                 "keywords": found,
-                                "note": note,
                             }
                         )
                         log(
-                            f"Match trovato: {act['title']} | "
-                            f"Articolo: {article['article_label']} | "
+                            f"Match trovato al n. atto {act_index}: "
+                            f"{act['title']} | Articolo: {article['article_label']} | "
                             f"Keyword: {', '.join(found)}"
                         )
                         break
@@ -326,8 +295,7 @@ def deduplicate(results):
 
 
 def format_check_timestamp() -> str:
-    now_local = datetime.now().astimezone()
-    return now_local.strftime("%d-%m-%Y %H:%M")
+    return datetime.now().strftime("%d-%m-%Y %H:%M")
 
 
 def build_header(results_count: int) -> list[str]:
@@ -354,7 +322,6 @@ def build_result_block(index: int, item: dict) -> list[str]:
         f"   <i>{escape(format_issue_label(item['issue_label']))}</i>",
         f"   <i>Articolo:</i> {escape(clean_label(item['article_label']))}",
         f"   <i>Match:</i> {escape(', '.join(item['keywords']))}",
-        f"   <b>{escape(item['note'])}</b>",
         "",
     ]
 
@@ -367,7 +334,6 @@ def build_message(results):
 
     header = build_header(len(results))
     parts = header[:]
-
     included_count = 0
 
     for i, item in enumerate(results[:MAX_RESULTS_IN_MESSAGE], start=1):
@@ -388,7 +354,6 @@ def build_message(results):
 
     message = "\n".join(parts)
 
-    # Ulteriore protezione di sicurezza, molto rara.
     if len(message) > TELEGRAM_MAX_TEXT_LENGTH:
         log("Messaggio ancora troppo lungo dopo la costruzione controllata. Applico fallback.")
         message = (
