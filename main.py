@@ -13,8 +13,8 @@ CHAT_ID = os.environ["CHAT_ID"]
 BASE_URL = "https://www.gazzettaufficiale.it"
 LAST_30_DAYS_URL = f"{BASE_URL}/30giorni/serie_generale"
 
-DAYS_BACK = 20
-MAX_ISSUES = 20
+DAYS_BACK = 5
+MAX_ISSUES = 5
 MAX_ACTS_PER_ISSUE = None
 MAX_RESULTS_IN_MESSAGE = 200
 
