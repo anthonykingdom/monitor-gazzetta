@@ -1,10 +1,11 @@
 name: Monitor Gazzetta v3
 
 on:
+  push:
   schedule:
-    - cron: "*/5 * * * *"   # ogni 5 minuti (TEST)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
-
+  
 jobs:
   run-script:
     runs-on: ubuntu-latest
