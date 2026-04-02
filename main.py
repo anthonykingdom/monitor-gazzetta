@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from urllib.parse import urljoin
 
@@ -13,10 +13,14 @@ CHAT_ID = os.environ["CHAT_ID"]
 BASE_URL = "https://www.gazzettaufficiale.it"
 LAST_30_DAYS_URL = f"{BASE_URL}/30giorni/serie_generale"
 
-DAYS_BACK = 1
-MAX_ISSUES = 1
-MAX_ACTS_PER_ISSUE = 6
+DAYS_BACK = 6
+MAX_ISSUES = 6
+MAX_ACTS_PER_ISSUE = 20
 MAX_RESULTS_IN_MESSAGE = 50
+
+# Telegram accetta circa 4096 caratteri; teniamo un margine.
+TELEGRAM_MAX_TEXT_LENGTH = 3900
+MAX_NOTE_LENGTH = 220
 
 KEYWORDS = [
     "fondazioni lirico-sinfoniche",
@@ -30,6 +34,11 @@ KEYWORDS = [
 ]
 
 
+def log(message: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+
 def send_telegram_message_html(html_text: str) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -38,12 +47,17 @@ def send_telegram_message_html(html_text: str) -> None:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+
+    log(f"Invio messaggio Telegram ({len(html_text)} caratteri)...")
     response = requests.post(url, data=payload, timeout=60)
+    log(f"Telegram status_code: {response.status_code}")
+    log(f"Telegram response: {response.text}")
     response.raise_for_status()
 
 
 def get_html(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0"}
+    log(f"Download HTML: {url}")
     response = requests.get(url, headers=headers, timeout=60)
     response.raise_for_status()
     return response.text
@@ -72,6 +86,7 @@ def format_issue_label(issue_label: str) -> str:
 
 
 def get_recent_issues(days_back: int = DAYS_BACK):
+    log(f"Ricerca Gazzette degli ultimi {days_back} giorni...")
     html = get_html(LAST_30_DAYS_URL)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -105,10 +120,13 @@ def get_recent_issues(days_back: int = DAYS_BACK):
         )
 
     issues.sort(key=lambda x: x["issue_date"], reverse=True)
-    return issues[:MAX_ISSUES]
+    selected = issues[:MAX_ISSUES]
+    log(f"Gazzette rilevanti trovate: {len(selected)}")
+    return selected
 
 
 def extract_acts_from_issue(issue):
+    log(f"Estrazione atti da: {issue['issue_label']}")
     html = get_html(issue["url"])
     soup = BeautifulSoup(html, "html.parser")
 
@@ -140,7 +158,9 @@ def extract_acts_from_issue(issue):
             }
         )
 
-    return acts[:MAX_ACTS_PER_ISSUE]
+    selected = acts[:MAX_ACTS_PER_ISSUE]
+    log(f"Atti estratti da {issue['issue_label']}: {len(selected)}")
+    return selected
 
 
 def get_menu_url_from_detail(detail_url: str):
@@ -207,6 +227,17 @@ def clean_label(text: str) -> str:
     return text.strip(" -–—:;")
 
 
+def shorten_text(text: str, max_len: int) -> str:
+    text = normalize_spaces(text)
+    if len(text) <= max_len:
+        return text
+
+    shortened = text[:max_len].rsplit(" ", 1)[0].strip()
+    if not shortened:
+        shortened = text[:max_len].strip()
+    return shortened + "…"
+
+
 def extract_note_from_text(text: str) -> str:
     sentences = re.split(r"[.;:\n]", text)
 
@@ -224,21 +255,27 @@ def extract_note_from_text(text: str) -> str:
         if s.lower().startswith("considerato"):
             continue
 
-        return s
+        return shorten_text(s, MAX_NOTE_LENGTH)
 
-    return text
+    return shorten_text(text, MAX_NOTE_LENGTH)
 
 
 def analyze():
+    log("Avvio analisi...")
     results = []
 
-    for issue in get_recent_issues():
+    issues = get_recent_issues()
+    log(f"Gazzette da analizzare: {len(issues)}")
+
+    for issue in issues:
         acts = extract_acts_from_issue(issue)
 
         for act in acts:
             try:
+                log(f"Analizzo atto: {act['title']}")
                 menu_url = get_menu_url_from_detail(act["detail_url"])
                 if not menu_url:
+                    log("Menu 'atto completo' non trovato.")
                     continue
 
                 for article in extract_article_urls(menu_url):
@@ -259,11 +296,17 @@ def analyze():
                                 "note": note,
                             }
                         )
+                        log(
+                            f"Match trovato: {act['title']} | "
+                            f"Articolo: {article['article_label']} | "
+                            f"Keyword: {', '.join(found)}"
+                        )
                         break
 
             except Exception as e:
-                print(f"Errore su {act['detail_url']}: {e}")
+                log(f"Errore su {act['detail_url']}: {e}")
 
+    log(f"Analisi completata. Risultati trovati: {len(results)}")
     return results
 
 
@@ -278,36 +321,99 @@ def deduplicate(results):
         seen.add(key)
         unique.append(item)
 
+    log(f"Deduplica completata. Risultati unici: {len(unique)}")
     return unique
 
 
+def format_check_timestamp() -> str:
+    now_local = datetime.now().astimezone()
+    return now_local.strftime("%d-%m-%Y %H:%M")
+
+
+def build_header(results_count: int) -> list[str]:
+    checked_at = format_check_timestamp()
+
+    if results_count == 0:
+        return [
+            f"<b>📭 Nessun atto rilevante trovato negli ultimi {DAYS_BACK} giorni</b>",
+            f"<i>Controllo eseguito: {escape(checked_at)}</i>",
+            "",
+            "Controllo eseguito correttamente.",
+        ]
+
+    return [
+        f"<b>🚨 Atti rilevanti trovati negli ultimi {DAYS_BACK} giorni: {results_count}</b>",
+        f"<i>Controllo eseguito: {escape(checked_at)}</i>",
+        "",
+    ]
+
+
+def build_result_block(index: int, item: dict) -> list[str]:
+    return [
+        f"{index}. <a href=\"{escape(item['url'])}\">{escape(item['title'])}</a>",
+        f"   <i>{escape(format_issue_label(item['issue_label']))}</i>",
+        f"   <i>Articolo:</i> {escape(clean_label(item['article_label']))}",
+        f"   <i>Match:</i> {escape(', '.join(item['keywords']))}",
+        f"   <b>{escape(item['note'])}</b>",
+        "",
+    ]
+
+
 def build_message(results):
+    results = sorted(results, key=lambda x: x["issue_date"], reverse=True)
+
     if not results:
-        return (
-            f"<b>📭 Nessun atto rilevante trovato negli ultimi {DAYS_BACK} giorni</b>\n\n"
-            "Controllo eseguito correttamente."
-        )
+        return "\n".join(build_header(0))
 
-    results.sort(key=lambda x: x["issue_date"], reverse=True)
+    header = build_header(len(results))
+    parts = header[:]
 
-    parts = [f"<b>🚨 Atti rilevanti trovati negli ultimi {DAYS_BACK} giorni</b>\n"]
+    included_count = 0
 
     for i, item in enumerate(results[:MAX_RESULTS_IN_MESSAGE], start=1):
-        parts.append(f"{i}. <a href=\"{escape(item['url'])}\">{escape(item['title'])}</a>")
-        parts.append(f"   <i>{escape(format_issue_label(item['issue_label']))}</i>")
-        parts.append(f"   <i>Articolo:</i> {escape(clean_label(item['article_label']))}")
-        parts.append(f"   <i>Match:</i> {escape(', '.join(item['keywords']))}")
-        parts.append(f"   <b>{escape(item['note'])}</b>\n")
+        block = build_result_block(i, item)
+        candidate = "\n".join(parts + block)
 
-    return "\n".join(parts)
+        if len(candidate) > TELEGRAM_MAX_TEXT_LENGTH:
+            break
+
+        parts.extend(block)
+        included_count += 1
+
+    total_results = min(len(results), MAX_RESULTS_IN_MESSAGE)
+
+    if included_count < total_results:
+        omitted = total_results - included_count
+        parts.append(f"<i>... altri {omitted} risultati non mostrati per limiti di lunghezza.</i>")
+
+    message = "\n".join(parts)
+
+    # Ulteriore protezione di sicurezza, molto rara.
+    if len(message) > TELEGRAM_MAX_TEXT_LENGTH:
+        log("Messaggio ancora troppo lungo dopo la costruzione controllata. Applico fallback.")
+        message = (
+            "\n".join(header)
+            + "\n"
+            + "<i>Messaggio troppo lungo: risultati trovati ma non interamente visualizzabili.</i>"
+        )
+
+    return message
 
 
 def main():
-    results = analyze()
-    results = deduplicate(results)
-    message = build_message(results)
-    send_telegram_message_html(message)
-    print("Controllo completato.")
+    try:
+        log("=== Avvio script Monitor Gazzetta ===")
+        results = analyze()
+        results = deduplicate(results)
+        message = build_message(results)
+
+        log(f"Lunghezza messaggio finale: {len(message)} caratteri")
+        send_telegram_message_html(message)
+
+        log("✅ Controllo completato con successo.")
+    except Exception as e:
+        log(f"❌ Errore fatale: {e}")
+        raise
 
 
 if __name__ == "__main__":
