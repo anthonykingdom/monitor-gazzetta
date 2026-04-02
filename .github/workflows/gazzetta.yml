@@ -1,11 +1,8 @@
-name: Monitor Gazzetta v3
+name: Monitor Gazzetta
 
 on:
-  push:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
-  
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
@@ -13,11 +10,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Debug trigger
-        run: |
-          echo "Triggered by: ${{ github.event_name }}"
-          echo "Time (UTC): $(date)"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -31,4 +23,4 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python -u main.py
+        run: python main.py
